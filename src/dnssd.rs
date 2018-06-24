@@ -1,4 +1,3 @@
-#![allow(unused)]
 use futures::channel::oneshot;
 use libc::{c_char, c_int, c_void, int32_t, uint16_t, uint32_t};
 use mio::unix::EventedFd;
@@ -6,11 +5,7 @@ use mio::{Evented, Poll, PollOpt, Ready, Token};
 use std::convert::From;
 use std::ffi::{CStr, CString};
 use std::io;
-use std::os::unix::io::FromRawFd;
-use std::process::Command;
 use std::ptr;
-use std::thread;
-use std::time::Duration;
 use tokio::prelude::*;
 use tokio::reactor::PollEvented2;
 
@@ -69,6 +64,7 @@ pub const DNSSERVICEERR_NOROUTER: DNSServiceErrorType = -65566; /* No router cur
 pub const DNSSERVICEERR_POLLINGMODE: DNSServiceErrorType = -65567;
 pub const DNSSERVICEERR_TIMEOUT: DNSServiceErrorType = -65568;
 
+#[allow(unused)]
 type DNSServiceRegisterReply = extern "C" fn(
     sd_ref: DNSServiceRef,
     flags: DNSServiceFlags,
@@ -79,6 +75,7 @@ type DNSServiceRegisterReply = extern "C" fn(
     context: *mut c_void,
 );
 
+#[allow(unused)]
 type DNSServiceBrowseReply = extern "C" fn(
     sd_ref: DNSServiceRef,
     flags: DNSServiceFlags,
@@ -91,13 +88,13 @@ type DNSServiceBrowseReply = extern "C" fn(
 );
 
 extern "C" fn dns_service_register_cb(
-    sd_ref: DNSServiceRef,
-    flags: uint32_t,
-    error_code: DNSServiceErrorType,
+    _sd_ref: DNSServiceRef,
+    _flags: uint32_t,
+    _error_code: DNSServiceErrorType,
     name: *const c_char,
     regtype: *const c_char,
     domain: *const c_char,
-    context: *mut c_void,
+    _context: *mut c_void,
 ) {
     let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
     let regtype = unsafe { CStr::from_ptr(regtype).to_str().unwrap() };
@@ -105,7 +102,9 @@ extern "C" fn dns_service_register_cb(
     println!("Registered service {}.{}{}", name, regtype, domain);
 }
 
-pub fn dns_service_register() -> Result<BoxedDNSServiceRef, DNSServiceErrorType> {
+pub fn dns_service_register(
+    _service_sender: oneshot::Sender<Service>,
+) -> Result<BoxedDNSServiceRef, DNSServiceErrorType> {
     let reg_type = CString::new("_localchat._tcp.").unwrap();
     unsafe {
         let mut sd_ref: DNSServiceRef = ptr::null_mut();
@@ -133,14 +132,14 @@ pub fn dns_service_register() -> Result<BoxedDNSServiceRef, DNSServiceErrorType>
 }
 
 extern "C" fn dns_service_browse_cb(
-    sd_ref: DNSServiceRef,
-    flags: DNSServiceFlags,
-    interface_index: uint32_t,
-    error_code: DNSServiceErrorType,
-    service_name: *const c_char,
-    regtype: *const c_char,
-    reply_domain: *const c_char,
-    context: *mut c_void,
+    _sd_ref: DNSServiceRef,
+    _flags: DNSServiceFlags,
+    _interface_index: uint32_t,
+    _error_code: DNSServiceErrorType,
+    _service_name: *const c_char,
+    _regtype: *const c_char,
+    _reply_domain: *const c_char,
+    _context: *mut c_void,
 ) {
     println!("dns service browse callback got called!");
 }
@@ -314,7 +313,7 @@ impl From<io::Error> for Error {
 }
 
 #[derive(Debug)]
-struct Service {
+pub struct Service {
     name: String,
     regtype: String,
     domain: String,
@@ -369,7 +368,7 @@ pub enum ServiceRegisterFutureState {
 pub fn register_service() -> Result<ServiceRegisterFuture, Error> {
     // TODO: need to pass a oneshot channel's tx
     let (service_sender, service_receiver) = oneshot::channel::<Service>();
-    let boxed_sd_ref = dns_service_register()?;
+    let boxed_sd_ref = dns_service_register(service_sender)?;
     let raw_fd = dns_service_ref_socket(&boxed_sd_ref)?;
     let socket = PollEvented2::new(Socket { raw_fd });
     let state = ServiceRegisterFutureState::WaitingOnSocket;
