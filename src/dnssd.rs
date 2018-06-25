@@ -1,11 +1,11 @@
-use futures::channel::oneshot;
 use libc::{c_char, c_int, c_void, int32_t, uint16_t, uint32_t};
+use mio;
 use mio::unix::EventedFd;
-use mio::{Evented, Poll, PollOpt, Ready, Token};
 use std::convert::From;
 use std::ffi::{CStr, CString};
 use std::io;
 use std::ptr;
+use std::sync::Mutex;
 use tokio::prelude::*;
 use tokio::reactor::PollEvented2;
 
@@ -18,15 +18,15 @@ pub struct BoxedDNSServiceRef(DNSServiceRef);
 
 unsafe impl Send for BoxedDNSServiceRef {}
 
-// impl Drop for BoxedDNSServiceRef {
-//     fn drop(&mut self) {
-//         println!("Dropping/deallocating sdref");
-//         dns_service_ref_deallocate(self.0);
-//     }
-// }
+impl Drop for BoxedDNSServiceRef {
+    fn drop(&mut self) {
+        dns_service_ref_deallocate(self.0);
+    }
+}
 
 type DNSServiceFlags = uint32_t;
 
+#[allow(non_camel_case_types)]
 pub type dnssd_sock_t = c_int;
 
 pub type DNSServiceErrorType = int32_t;
@@ -94,18 +94,22 @@ extern "C" fn dns_service_register_cb(
     name: *const c_char,
     regtype: *const c_char,
     domain: *const c_char,
-    _context: *mut c_void,
+    context: *mut c_void,
 ) {
-    let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
-    let regtype = unsafe { CStr::from_ptr(regtype).to_str().unwrap() };
-    let domain = unsafe { CStr::from_ptr(domain).to_str().unwrap() };
-    println!("Registered service {}.{}{}", name, regtype, domain);
+    let service_mutex: &mut Mutex<Service> = unsafe { &mut *(context as *mut Mutex<Service>) };
+    let mut service_guard = service_mutex.lock().unwrap();
+    unsafe {
+        (*service_guard).name = CStr::from_ptr(name).to_string_lossy().into_owned();
+        (*service_guard).regtype = CStr::from_ptr(regtype).to_string_lossy().into_owned();
+        (*service_guard).domain = CStr::from_ptr(domain).to_string_lossy().into_owned();
+    };
 }
 
 pub fn dns_service_register(
-    _service_sender: oneshot::Sender<Service>,
+    service_mutex: &mut Mutex<Service>,
 ) -> Result<BoxedDNSServiceRef, DNSServiceErrorType> {
     let reg_type = CString::new("_localchat._tcp.").unwrap();
+    let context = service_mutex as *mut _ as *mut c_void;
     unsafe {
         let mut sd_ref: DNSServiceRef = ptr::null_mut();
         let sd_ref_ptr = &mut sd_ref as *mut DNSServiceRef;
@@ -121,7 +125,7 @@ pub fn dns_service_register(
             0,
             ptr::null(),
             dns_service_register_cb,
-            ptr::null_mut(),
+            context,
         );
         if err == DNSSERVICEERR_NOERROR {
             Ok(BoxedDNSServiceRef(sd_ref))
@@ -312,11 +316,21 @@ impl From<io::Error> for Error {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Service {
     name: String,
     regtype: String,
     domain: String,
+}
+
+impl Default for Service {
+    fn default() -> Self {
+        Service {
+            name: String::new(),
+            regtype: String::new(),
+            domain: String::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -324,83 +338,65 @@ struct Socket {
     raw_fd: dnssd_sock_t,
 }
 
-impl Evented for Socket {
+impl mio::Evented for Socket {
     fn register(
         &self,
-        poll: &Poll,
-        token: Token,
-        interest: Ready,
-        opts: PollOpt,
+        poll: &mio::Poll,
+        token: mio::Token,
+        interest: mio::Ready,
+        opts: mio::PollOpt,
     ) -> io::Result<()> {
         EventedFd(&self.raw_fd).register(poll, token, interest, opts)
     }
 
     fn reregister(
         &self,
-        poll: &Poll,
-        token: Token,
-        interest: Ready,
-        opts: PollOpt,
+        poll: &mio::Poll,
+        token: mio::Token,
+        interest: mio::Ready,
+        opts: mio::PollOpt,
     ) -> io::Result<()> {
         EventedFd(&self.raw_fd).reregister(poll, token, interest, opts)
     }
 
-    fn deregister(&self, poll: &Poll) -> io::Result<()> {
+    fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
         EventedFd(&self.raw_fd).deregister(poll)
     }
 }
 
-#[derive(Debug)]
-pub struct ServiceRegisterFuture {
-    boxed_sd_ref: BoxedDNSServiceRef,
-    socket: PollEvented2<Socket>,
-    service_receiver: oneshot::Receiver<Service>,
-    state: ServiceRegisterFutureState,
-}
-
-#[derive(Debug)]
-pub enum ServiceRegisterFutureState {
-    WaitingOnSocket,
-    WaitingOnService,
-    Registered,
-}
-
-pub fn register_service() -> Result<ServiceRegisterFuture, Error> {
-    // TODO: need to pass a oneshot channel's tx
-    let (service_sender, service_receiver) = oneshot::channel::<Service>();
-    let boxed_sd_ref = dns_service_register(service_sender)?;
+pub fn register_service() -> Result<impl Future<Item = Service, Error = Error>, Error> {
+    let service_mutex: &'static mut Mutex<Service> =
+        Box::leak(Box::new(Mutex::new(Service::default())));
+    let boxed_sd_ref = dns_service_register(service_mutex)?;
     let raw_fd = dns_service_ref_socket(&boxed_sd_ref)?;
-    let socket = PollEvented2::new(Socket { raw_fd });
-    let state = ServiceRegisterFutureState::WaitingOnSocket;
-    Ok(ServiceRegisterFuture {
-        boxed_sd_ref,
-        socket,
-        service_receiver,
-        state,
-    })
+    Ok(wait_for_socket(raw_fd).map(move |_| {
+        // Will synchronously trigger our "callback"
+        dns_service_process_result(&boxed_sd_ref);
+        let service = service_mutex.lock().unwrap();
+        (*service).clone()
+    }))
 }
 
-impl Future for ServiceRegisterFuture {
-    type Item = String;
+pub fn wait_for_socket(raw_fd: dnssd_sock_t) -> SocketReadyFuture {
+    SocketReadyFuture {
+        socket: PollEvented2::new(Socket { raw_fd }),
+    }
+}
+
+pub struct SocketReadyFuture {
+    socket: PollEvented2<Socket>,
+}
+
+impl Future for SocketReadyFuture {
+    type Item = ();
     type Error = Error;
 
-    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        match self.socket.poll_read_ready(Ready::readable())? {
-            Async::Ready(r) => {
-                if r.is_readable() {
-                    let err = Error::from(dns_service_process_result(&self.boxed_sd_ref));
-                    if let Error::ServiceError(ServiceError::NoError) = err {
-                        println!("Polled - ready to read!");
-                        Ok(Async::Ready(String::from("hello!")))
-                    } else {
-                        println!("Polled - failed processing result with error: {:?}", err);
-                        Err(err)
-                    }
-                } else {
-                    Ok(Async::NotReady)
-                }
-            }
-            Async::NotReady => Ok(Async::NotReady),
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let result = try_ready!(self.socket.poll_read_ready(mio::Ready::readable()));
+        if result.is_readable() {
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
         }
     }
 }

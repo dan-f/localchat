@@ -6,8 +6,8 @@ use tokio::prelude::*;
 
 fn main() -> Result<(), dnssd::Error> {
     let f = dnssd::register_service()?
-        .then(|_| {
-            println!("Service registered!");
+        .then(|service| {
+            println!("Service registered: {:?}", service);
             Ok(())
         })
         .map_err(|_: dnssd::Error| {

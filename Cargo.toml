@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Daniel Friedman <dfriedman58@gmail.com>"]
 
 [dependencies]
-futures = "0.2"
+futures = "0.1"
 libc = "0.2"
 mio = "0.6"
 tokio = "0.1"
