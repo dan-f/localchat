@@ -166,9 +166,9 @@ pub fn dns_service_browse() -> DNSServiceErrorType {
 }
 
 pub fn dns_service_ref_socket(
-    boxed_sd_ref: &BoxedDNSServiceRef,
+    sd_ref: &BoxedDNSServiceRef,
 ) -> Result<dnssd_sock_t, DNSServiceErrorType> {
-    let sock_fd = unsafe { DNSServiceRefSockFD(boxed_sd_ref.0) };
+    let sock_fd = unsafe { DNSServiceRefSockFD(sd_ref.0) };
     if sock_fd == -1 {
         Err(DNSSERVICEERR_UNKNOWN)
     } else {
@@ -176,8 +176,8 @@ pub fn dns_service_ref_socket(
     }
 }
 
-pub fn dns_service_process_result(boxed_sd_ref: &BoxedDNSServiceRef) -> DNSServiceErrorType {
-    unsafe { DNSServiceProcessResult(boxed_sd_ref.0) }
+pub fn dns_service_process_result(sd_ref: &BoxedDNSServiceRef) -> DNSServiceErrorType {
+    unsafe { DNSServiceProcessResult(sd_ref.0) }
 }
 
 pub fn dns_service_ref_deallocate(sd_ref: DNSServiceRef) {
@@ -323,6 +323,12 @@ pub struct Service {
     domain: String,
 }
 
+#[derive(Debug)]
+pub struct Registration {
+    sd_ref: BoxedDNSServiceRef,
+    service: Service,
+}
+
 impl Default for Service {
     fn default() -> Self {
         Service {
@@ -364,16 +370,18 @@ impl mio::Evented for Socket {
     }
 }
 
-pub fn register_service() -> Result<impl Future<Item = Service, Error = Error>, Error> {
+pub fn register_service() -> Result<impl Future<Item = Registration, Error = Error>, Error> {
     let service_mutex: &'static mut Mutex<Service> =
         Box::leak(Box::new(Mutex::new(Service::default())));
-    let boxed_sd_ref = dns_service_register(service_mutex)?;
-    let raw_fd = dns_service_ref_socket(&boxed_sd_ref)?;
+    let sd_ref = dns_service_register(service_mutex)?;
+    let raw_fd = dns_service_ref_socket(&sd_ref)?;
     Ok(wait_for_socket(raw_fd).map(move |_| {
         // Will synchronously trigger our "callback"
-        dns_service_process_result(&boxed_sd_ref);
-        let service = service_mutex.lock().unwrap();
-        (*service).clone()
+        dns_service_process_result(&sd_ref);
+        Registration {
+            sd_ref,
+            service: (*service_mutex.lock().unwrap()).clone(),
+        }
     }))
 }
 
