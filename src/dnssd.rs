@@ -137,31 +137,50 @@ pub fn dns_service_register(
 
 extern "C" fn dns_service_browse_cb(
     _sd_ref: DNSServiceRef,
-    _flags: DNSServiceFlags,
+    flags: DNSServiceFlags,
     _interface_index: uint32_t,
     _error_code: DNSServiceErrorType,
-    _service_name: *const c_char,
-    _regtype: *const c_char,
-    _reply_domain: *const c_char,
-    _context: *mut c_void,
+    name: *const c_char,
+    regtype: *const c_char,
+    domain: *const c_char,
+    context: *mut c_void,
 ) {
-    println!("dns service browse callback got called!");
+    let service_mutex: &mut Mutex<Service> = unsafe { &mut *(context as *mut Mutex<Service>) };
+    let mut service_guard = service_mutex.lock().unwrap();
+    if flags & 0x2 > 0 {
+        println!("Service added!");
+    } else {
+        println!("Service removed!");
+    }
+    unsafe {
+        (*service_guard).name = CStr::from_ptr(name).to_string_lossy().into_owned();
+        (*service_guard).regtype = CStr::from_ptr(regtype).to_string_lossy().into_owned();
+        (*service_guard).domain = CStr::from_ptr(domain).to_string_lossy().into_owned();
+    };
 }
 
-pub fn dns_service_browse() -> DNSServiceErrorType {
+pub fn dns_service_browse(
+    service_mutex: &mut Mutex<Service>,
+) -> Result<BoxedDNSServiceRef, DNSServiceErrorType> {
+    let context = service_mutex as *mut _ as *mut c_void;
     unsafe {
         let mut sd_ref: DNSServiceRef = ptr::null_mut();
         let sd_ref_ptr = &mut sd_ref as *mut DNSServiceRef;
         let reg_type = CString::new("_localchat._tcp.").unwrap();
-        DNSServiceBrowse(
+        let err = DNSServiceBrowse(
             sd_ref_ptr,
             0,
             0,
             reg_type.as_ptr(),
             ptr::null(),
             dns_service_browse_cb,
-            ptr::null_mut(),
-        )
+            context,
+        );
+        if err == DNSSERVICEERR_NOERROR {
+            Ok(BoxedDNSServiceRef(sd_ref))
+        } else {
+            Err(err)
+        }
     }
 }
 
@@ -385,6 +404,17 @@ pub fn register_service() -> Result<impl Future<Item = Registration, Error = Err
     }))
 }
 
+pub fn browse_services() -> Result<impl Stream<Item = Service, Error = Error>, Error> {
+    let service_mutex: &'static mut Mutex<Service> =
+        Box::leak(Box::new(Mutex::new(Service::default())));
+    let sd_ref = dns_service_browse(service_mutex)?;
+    let raw_fd = dns_service_ref_socket(&sd_ref)?;
+    Ok(socket_ready_stream(raw_fd).map(move |_| {
+        dns_service_process_result(&sd_ref);
+        service_mutex.lock().unwrap().clone()
+    }))
+}
+
 pub fn wait_for_socket(raw_fd: dnssd_sock_t) -> SocketReadyFuture {
     SocketReadyFuture {
         socket: PollEvented2::new(Socket { raw_fd }),
@@ -403,6 +433,30 @@ impl Future for SocketReadyFuture {
         let result = try_ready!(self.socket.poll_read_ready(mio::Ready::readable()));
         if result.is_readable() {
             Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
+    }
+}
+
+pub fn socket_ready_stream(raw_fd: dnssd_sock_t) -> SocketReadyStream {
+    SocketReadyStream {
+        socket: PollEvented2::new(Socket { raw_fd }),
+    }
+}
+
+pub struct SocketReadyStream {
+    socket: PollEvented2<Socket>,
+}
+
+impl Stream for SocketReadyStream {
+    type Item = ();
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        let result = try_ready!(self.socket.poll_read_ready(mio::Ready::readable()));
+        if result.is_readable() {
+            Ok(Async::Ready(Some(())))
         } else {
             Ok(Async::NotReady)
         }
