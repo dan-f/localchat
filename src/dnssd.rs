@@ -107,7 +107,7 @@ extern "C" fn dns_service_register_cb(
 
 pub fn dns_service_register(
     service_mutex: &mut Mutex<Service>,
-) -> Result<BoxedDNSServiceRef, DNSServiceErrorType> {
+) -> Result<BoxedDNSServiceRef, ServiceError> {
     let reg_type = CString::new("_localchat._tcp.").unwrap();
     let context = service_mutex as *mut _ as *mut c_void;
     unsafe {
@@ -127,7 +127,8 @@ pub fn dns_service_register(
             dns_service_register_cb,
             context,
         );
-        if err == DNSSERVICEERR_NOERROR {
+        let err = ServiceError::from(err);
+        if let ServiceError::NoError = err {
             Ok(BoxedDNSServiceRef(sd_ref))
         } else {
             Err(err)
@@ -145,24 +146,27 @@ extern "C" fn dns_service_browse_cb(
     domain: *const c_char,
     context: *mut c_void,
 ) {
-    let service_mutex: &mut Mutex<Service> = unsafe { &mut *(context as *mut Mutex<Service>) };
-    let mut service_guard = service_mutex.lock().unwrap();
-    if flags & 0x2 > 0 {
-        println!("Service added!");
-    } else {
-        println!("Service removed!");
-    }
-    unsafe {
-        (*service_guard).name = CStr::from_ptr(name).to_string_lossy().into_owned();
-        (*service_guard).regtype = CStr::from_ptr(regtype).to_string_lossy().into_owned();
-        (*service_guard).domain = CStr::from_ptr(domain).to_string_lossy().into_owned();
+    let browse_event_mutex: &mut Mutex<BrowseEvent> =
+        unsafe { &mut *(context as *mut Mutex<BrowseEvent>) };
+    let mut browse_guard = browse_event_mutex.lock().unwrap();
+    let service = unsafe {
+        Service {
+            name: CStr::from_ptr(name).to_string_lossy().into_owned(),
+            regtype: CStr::from_ptr(regtype).to_string_lossy().into_owned(),
+            domain: CStr::from_ptr(domain).to_string_lossy().into_owned(),
+        }
     };
+    if flags & 0x2 > 0 {
+        *browse_guard = BrowseEvent::Joined(service);
+    } else {
+        *browse_guard = BrowseEvent::Dropped(service);
+    }
 }
 
 pub fn dns_service_browse(
-    service_mutex: &mut Mutex<Service>,
-) -> Result<BoxedDNSServiceRef, DNSServiceErrorType> {
-    let context = service_mutex as *mut _ as *mut c_void;
+    browse_event: &mut Mutex<BrowseEvent>,
+) -> Result<BoxedDNSServiceRef, ServiceError> {
+    let context = browse_event as *mut _ as *mut c_void;
     unsafe {
         let mut sd_ref: DNSServiceRef = ptr::null_mut();
         let sd_ref_ptr = &mut sd_ref as *mut DNSServiceRef;
@@ -176,7 +180,8 @@ pub fn dns_service_browse(
             dns_service_browse_cb,
             context,
         );
-        if err == DNSSERVICEERR_NOERROR {
+        let err = ServiceError::from(err);
+        if let ServiceError::NoError = err {
             Ok(BoxedDNSServiceRef(sd_ref))
         } else {
             Err(err)
@@ -184,19 +189,17 @@ pub fn dns_service_browse(
     }
 }
 
-pub fn dns_service_ref_socket(
-    sd_ref: &BoxedDNSServiceRef,
-) -> Result<dnssd_sock_t, DNSServiceErrorType> {
+pub fn dns_service_ref_socket(sd_ref: &BoxedDNSServiceRef) -> Result<dnssd_sock_t, ServiceError> {
     let sock_fd = unsafe { DNSServiceRefSockFD(sd_ref.0) };
     if sock_fd == -1 {
-        Err(DNSSERVICEERR_UNKNOWN)
+        Err(ServiceError::Unknown)
     } else {
         Ok(sock_fd)
     }
 }
 
-pub fn dns_service_process_result(sd_ref: &BoxedDNSServiceRef) -> DNSServiceErrorType {
-    unsafe { DNSServiceProcessResult(sd_ref.0) }
+pub fn dns_service_process_result(sd_ref: &BoxedDNSServiceRef) -> ServiceError {
+    unsafe { ServiceError::from(DNSServiceProcessResult(sd_ref.0)) }
 }
 
 pub fn dns_service_ref_deallocate(sd_ref: DNSServiceRef) {
@@ -342,6 +345,12 @@ pub struct Service {
     domain: String,
 }
 
+#[derive(Clone, Debug)]
+pub enum BrowseEvent {
+    Joined(Service),
+    Dropped(Service),
+}
+
 #[derive(Debug)]
 pub struct Registration {
     sd_ref: BoxedDNSServiceRef,
@@ -404,14 +413,15 @@ pub fn register_service() -> Result<impl Future<Item = Registration, Error = Err
     }))
 }
 
-pub fn browse_services() -> Result<impl Stream<Item = Service, Error = Error>, Error> {
-    let service_mutex: &'static mut Mutex<Service> =
-        Box::leak(Box::new(Mutex::new(Service::default())));
-    let sd_ref = dns_service_browse(service_mutex)?;
+pub fn browse_services() -> Result<impl Stream<Item = BrowseEvent, Error = Error>, Error> {
+    let browse_event: &'static mut Mutex<BrowseEvent> = Box::leak(Box::new(Mutex::new(
+        BrowseEvent::Joined(Service::default()),
+    )));
+    let sd_ref = dns_service_browse(browse_event)?;
     let raw_fd = dns_service_ref_socket(&sd_ref)?;
     Ok(socket_ready_stream(raw_fd).map(move |_| {
         dns_service_process_result(&sd_ref);
-        service_mutex.lock().unwrap().clone()
+        browse_event.lock().unwrap().clone()
     }))
 }
 

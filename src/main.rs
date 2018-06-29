@@ -26,8 +26,8 @@ fn register_service() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error
 
 fn browse_services() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
     Ok(dnssd::browse_services()?
-        .for_each(|service| {
-            println!("Found service: {:?}", service);
+        .for_each(|browse_event| {
+            println!("Browse event: {:?}", browse_event);
             Ok(())
         })
         .map_err(|e| {
