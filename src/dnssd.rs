@@ -338,7 +338,7 @@ impl From<io::Error> for Error {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Service {
     name: String,
     regtype: String,

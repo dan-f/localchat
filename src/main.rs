@@ -2,9 +2,24 @@ extern crate localchat;
 extern crate tokio;
 
 use localchat::dnssd;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::prelude::*;
 use tokio::timer::Delay;
+
+#[derive(Debug)]
+struct State {
+    peers: HashSet<dnssd::Service>,
+}
+
+impl State {
+    fn new() -> Self {
+        State {
+            peers: HashSet::new(),
+        }
+    }
+}
 
 fn register_service() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
     let f = dnssd::register_service()?
@@ -24,10 +39,21 @@ fn register_service() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error
     Ok(f)
 }
 
-fn browse_services() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
+fn track_peers(
+    state: Arc<Mutex<State>>,
+) -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
     Ok(dnssd::browse_services()?
-        .for_each(|browse_event| {
-            println!("Browse event: {:?}", browse_event);
+        .for_each(move |browse_event| {
+            let mut guard = state.lock().unwrap();
+            match browse_event {
+                dnssd::BrowseEvent::Joined(service) => {
+                    (*guard).peers.insert(service);
+                }
+                dnssd::BrowseEvent::Dropped(service) => {
+                    (*guard).peers.remove(&service);
+                }
+            };
+            println!("Peers: {:?}", (*guard).peers);
             Ok(())
         })
         .map_err(|e| {
@@ -37,5 +63,6 @@ fn browse_services() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error>
 }
 
 fn main() {
-    tokio::run(browse_services().unwrap());
+    let state = Arc::new(Mutex::new(State::new()));
+    tokio::run(track_peers(state).unwrap());
 }
