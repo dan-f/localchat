@@ -1,4 +1,4 @@
-use libc::{c_char, c_int, c_void, int32_t, uint16_t, uint32_t};
+use libc::{c_char, c_int, c_uchar, c_void, int32_t, uint16_t, uint32_t};
 use mio;
 use mio::unix::EventedFd;
 use std::convert::From;
@@ -64,7 +64,6 @@ pub const DNSSERVICEERR_NOROUTER: DNSServiceErrorType = -65566; /* No router cur
 pub const DNSSERVICEERR_POLLINGMODE: DNSServiceErrorType = -65567;
 pub const DNSSERVICEERR_TIMEOUT: DNSServiceErrorType = -65568;
 
-#[allow(unused)]
 type DNSServiceRegisterReply = extern "C" fn(
     sd_ref: DNSServiceRef,
     flags: DNSServiceFlags,
@@ -75,7 +74,6 @@ type DNSServiceRegisterReply = extern "C" fn(
     context: *mut c_void,
 );
 
-#[allow(unused)]
 type DNSServiceBrowseReply = extern "C" fn(
     sd_ref: DNSServiceRef,
     flags: DNSServiceFlags,
@@ -84,6 +82,19 @@ type DNSServiceBrowseReply = extern "C" fn(
     service_name: *const c_char,
     regtype: *const c_char,
     reply_domain: *const c_char,
+    context: *mut c_void,
+);
+
+type DNSServiceResolveReply = extern "C" fn(
+    sd_ref: DNSServiceRef,
+    flags: uint32_t,
+    interface_index: uint32_t,
+    error_code: DNSServiceErrorType,
+    fullname: *const c_char,
+    hosttarget: *const c_char,
+    port: uint16_t,
+    txt_len: uint16_t,
+    txt_record: *const c_uchar,
     context: *mut c_void,
 );
 
@@ -229,6 +240,17 @@ extern "C" {
         txt_len: uint16_t,
         txt_record: *const c_void,
         callback: DNSServiceRegisterReply,
+        context: *mut c_void,
+    ) -> DNSServiceErrorType;
+
+    fn DNSServiceResolve(
+        sd_ref: *mut DNSServiceRef,
+        flags: DNSServiceFlags,
+        interface_index: uint32_t,
+        name: *const c_char,
+        regtype: *const c_char,
+        domain: *const c_char,
+        callback: DNSServiceResolveReply,
         context: *mut c_void,
     ) -> DNSServiceErrorType;
 
