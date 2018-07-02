@@ -161,33 +161,39 @@ extern "C" fn dns_service_browse_cb(
     _sd_ref: DNSServiceRef,
     flags: DNSServiceFlags,
     _interface_index: uint32_t,
-    _error_code: DNSServiceErrorType,
+    error_code: DNSServiceErrorType,
     name: *const c_char,
     regtype: *const c_char,
     domain: *const c_char,
     context: *mut c_void,
 ) {
-    let browse_event_mutex: &mut Mutex<BrowseEvent> =
-        unsafe { &mut *(context as *mut Mutex<BrowseEvent>) };
+    let browse_event_mutex: &mut Mutex<Result<BrowseEvent, ServiceError>> =
+        unsafe { &mut *(context as *mut Mutex<Result<BrowseEvent, ServiceError>>) };
     let mut browse_guard = browse_event_mutex.lock().unwrap();
-    let service = unsafe {
-        Service {
-            name: CStr::from_ptr(name).to_string_lossy().into_owned(),
-            regtype: CStr::from_ptr(regtype).to_string_lossy().into_owned(),
-            domain: CStr::from_ptr(domain).to_string_lossy().into_owned(),
-        }
-    };
-    if flags & 0x2 > 0 {
-        *browse_guard = BrowseEvent::Joined(service);
+    let err = ServiceError::from(error_code);
+    *browse_guard = if let ServiceError::NoError = err {
+        let service = unsafe {
+            Service {
+                name: CStr::from_ptr(name).to_string_lossy().into_owned(),
+                regtype: CStr::from_ptr(regtype).to_string_lossy().into_owned(),
+                domain: CStr::from_ptr(domain).to_string_lossy().into_owned(),
+            }
+        };
+        let browse_event = if flags & 0x2 > 0 {
+            BrowseEvent::Joined(service)
+        } else {
+            BrowseEvent::Dropped(service)
+        };
+        Ok(browse_event)
     } else {
-        *browse_guard = BrowseEvent::Dropped(service);
-    }
+        Err(err)
+    };
 }
 
 pub fn dns_service_browse(
-    browse_event: &mut Mutex<BrowseEvent>,
+    browse_event_result: &mut Mutex<Result<BrowseEvent, ServiceError>>,
 ) -> Result<BoxedDNSServiceRef, ServiceError> {
-    let context = browse_event as *mut _ as *mut c_void;
+    let context = browse_event_result as *mut _ as *mut c_void;
     unsafe {
         let mut sd_ref: DNSServiceRef = ptr::null_mut();
         let sd_ref_ptr = &mut sd_ref as *mut DNSServiceRef;
@@ -499,29 +505,30 @@ pub fn register_service() -> Result<impl Future<Item = Registration, Error = Err
     let sd_ref = dns_service_register(service_result_mutex)?;
     let raw_fd = dns_service_ref_socket(&sd_ref)?;
     Ok(wait_for_socket(raw_fd).then(move |result| {
-        match result {
-            Ok(()) => {
-                // Will synchronously trigger our "callback"
-                dns_service_process_result(&sd_ref);
-                (*service_result_mutex.lock().unwrap())
-                    .clone()
-                    .map(|service| Registration { sd_ref, service })
-                    .map_err(|e| Error::from(e))
-            }
-            Err(e) => Err(e),
-        }
+        result?;
+        // Will synchronously trigger our "callback"
+        dns_service_process_result(&sd_ref);
+        (*service_result_mutex.lock().unwrap())
+            .clone()
+            .map(|service| Registration { sd_ref, service })
+            .map_err(|e| Error::from(e))
     }))
 }
 
 pub fn browse_services() -> Result<impl Stream<Item = BrowseEvent, Error = Error>, Error> {
-    let browse_event: &'static mut Mutex<BrowseEvent> = Box::leak(Box::new(Mutex::new(
-        BrowseEvent::Joined(Service::default()),
-    )));
+    let browse_event: &'static mut Mutex<Result<BrowseEvent, ServiceError>> = Box::leak(Box::new(
+        Mutex::new(Ok(BrowseEvent::Joined(Service::default()))),
+    ));
     let sd_ref = dns_service_browse(browse_event)?;
     let raw_fd = dns_service_ref_socket(&sd_ref)?;
-    Ok(socket_ready_stream(raw_fd).map(move |_| {
+    Ok(socket_ready_stream(raw_fd).then(move |result| {
+        result?;
         dns_service_process_result(&sd_ref);
-        browse_event.lock().unwrap().clone()
+        browse_event
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(|e| Error::from(e))
     }))
 }
 
