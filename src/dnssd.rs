@@ -103,26 +103,34 @@ type DNSServiceResolveReply = extern "C" fn(
 extern "C" fn dns_service_register_cb(
     _sd_ref: DNSServiceRef,
     _flags: uint32_t,
-    _error_code: DNSServiceErrorType,
+    error_code: DNSServiceErrorType,
     name: *const c_char,
     regtype: *const c_char,
     domain: *const c_char,
     context: *mut c_void,
 ) {
-    let service_mutex: &mut Mutex<Service> = unsafe { &mut *(context as *mut Mutex<Service>) };
-    let mut service_guard = service_mutex.lock().unwrap();
-    unsafe {
-        (*service_guard).name = CStr::from_ptr(name).to_string_lossy().into_owned();
-        (*service_guard).regtype = CStr::from_ptr(regtype).to_string_lossy().into_owned();
-        (*service_guard).domain = CStr::from_ptr(domain).to_string_lossy().into_owned();
+    let service_result_mutex: &mut Mutex<Result<Service, ServiceError>> =
+        unsafe { &mut *(context as *mut Mutex<Result<Service, ServiceError>>) };
+    let err = ServiceError::from(error_code);
+    let mut service_guard = service_result_mutex.lock().unwrap();
+    *service_guard = if let ServiceError::NoError = err {
+        unsafe {
+            Ok(Service {
+                name: CStr::from_ptr(name).to_string_lossy().into_owned(),
+                regtype: CStr::from_ptr(regtype).to_string_lossy().into_owned(),
+                domain: CStr::from_ptr(domain).to_string_lossy().into_owned(),
+            })
+        }
+    } else {
+        Err(err)
     };
 }
 
 pub fn dns_service_register(
-    service_mutex: &mut Mutex<Service>,
+    service_result_mutex: &mut Mutex<Result<Service, ServiceError>>,
 ) -> Result<BoxedDNSServiceRef, ServiceError> {
     let reg_type = CString::new("_localchat._tcp.").unwrap();
-    let context = service_mutex as *mut _ as *mut c_void;
+    let context = service_result_mutex as *mut _ as *mut c_void;
     unsafe {
         let mut sd_ref: DNSServiceRef = ptr::null_mut();
         let sd_ref_ptr = &mut sd_ref as *mut DNSServiceRef;
@@ -486,16 +494,21 @@ impl mio::Evented for Socket {
 }
 
 pub fn register_service() -> Result<impl Future<Item = Registration, Error = Error>, Error> {
-    let service_mutex: &'static mut Mutex<Service> =
-        Box::leak(Box::new(Mutex::new(Service::default())));
-    let sd_ref = dns_service_register(service_mutex)?;
+    let service_result_mutex: &'static mut Mutex<Result<Service, ServiceError>> =
+        Box::leak(Box::new(Mutex::new(Ok(Service::default()))));
+    let sd_ref = dns_service_register(service_result_mutex)?;
     let raw_fd = dns_service_ref_socket(&sd_ref)?;
-    Ok(wait_for_socket(raw_fd).map(move |_| {
-        // Will synchronously trigger our "callback"
-        dns_service_process_result(&sd_ref);
-        Registration {
-            sd_ref,
-            service: (*service_mutex.lock().unwrap()).clone(),
+    Ok(wait_for_socket(raw_fd).then(move |result| {
+        match result {
+            Ok(()) => {
+                // Will synchronously trigger our "callback"
+                dns_service_process_result(&sd_ref);
+                (*service_result_mutex.lock().unwrap())
+                    .clone()
+                    .map(|service| Registration { sd_ref, service })
+                    .map_err(|e| Error::from(e))
+            }
+            Err(e) => Err(e),
         }
     }))
 }
