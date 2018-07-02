@@ -26,6 +26,8 @@ impl Drop for BoxedDNSServiceRef {
 
 type DNSServiceFlags = uint32_t;
 
+pub const DNS_SERVICE_FLAGS_FORCE_MULTICAST: DNSServiceFlags = 0x400;
+
 #[allow(non_camel_case_types)]
 pub type dnssd_sock_t = c_int;
 
@@ -200,6 +202,63 @@ pub fn dns_service_browse(
     }
 }
 
+extern "C" fn dns_service_resolve_reply(
+    _sd_ref: DNSServiceRef,
+    _flags: uint32_t,
+    _interface_index: uint32_t,
+    error_code: DNSServiceErrorType,
+    _fullname: *const c_char,
+    hosttarget: *const c_char,
+    port: uint16_t,
+    _txt_len: uint16_t,
+    _txt_record: *const c_uchar,
+    context: *mut c_void,
+) {
+    let port = u16::from_be(port); // Note that `port` is in network byte order (big-endian)
+    let name = unsafe { CStr::from_ptr(hosttarget).to_string_lossy().into_owned() };
+    let host = Host { name, port };
+    let err = ServiceError::from(error_code);
+    let host_result_mutex: &mut Mutex<Result<Host, ServiceError>> =
+        unsafe { &mut *(context as *mut Mutex<Result<Host, ServiceError>>) };
+    let mut guard = host_result_mutex.lock().unwrap();
+    *guard = if let ServiceError::NoError = err {
+        Ok(host)
+    } else {
+        Err(err)
+    };
+}
+
+pub fn dns_service_resolve(
+    service: &Service,
+    host: &mut Mutex<Result<Host, ServiceError>>,
+) -> Result<BoxedDNSServiceRef, ServiceError> {
+    let flags = DNS_SERVICE_FLAGS_FORCE_MULTICAST;
+    let name = CString::new(service.name.as_bytes()).unwrap().into_raw();
+    let regtype = CString::new(service.regtype.as_bytes()).unwrap().into_raw();
+    let domain = CString::new(service.domain.as_bytes()).unwrap().into_raw();
+    let context = host as *mut _ as *mut c_void;
+    unsafe {
+        let mut sd_ref: DNSServiceRef = ptr::null_mut();
+        let sd_ref_ptr = &mut sd_ref as *mut DNSServiceRef;
+        let err = DNSServiceResolve(
+            sd_ref_ptr,
+            flags,
+            0,
+            name,
+            regtype,
+            domain,
+            dns_service_resolve_reply,
+            context,
+        );
+        let err = ServiceError::from(err);
+        if let ServiceError::NoError = err {
+            Ok(BoxedDNSServiceRef(sd_ref))
+        } else {
+            Err(err)
+        }
+    }
+}
+
 pub fn dns_service_ref_socket(sd_ref: &BoxedDNSServiceRef) -> Result<dnssd_sock_t, ServiceError> {
     let sock_fd = unsafe { DNSServiceRefSockFD(sd_ref.0) };
     if sock_fd == -1 {
@@ -261,7 +320,7 @@ extern "C" {
     fn DNSServiceRefDeallocate(sd_ref: DNSServiceRef);
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ServiceError {
     NoError,
     Unknown,
@@ -368,6 +427,12 @@ pub struct Service {
 }
 
 #[derive(Clone, Debug)]
+pub struct Host {
+    name: String,
+    port: u16,
+}
+
+#[derive(Clone, Debug)]
 pub enum BrowseEvent {
     Joined(Service),
     Dropped(Service),
@@ -444,6 +509,29 @@ pub fn browse_services() -> Result<impl Stream<Item = BrowseEvent, Error = Error
     Ok(socket_ready_stream(raw_fd).map(move |_| {
         dns_service_process_result(&sd_ref);
         browse_event.lock().unwrap().clone()
+    }))
+}
+
+pub fn resolve_service(
+    service: &Service,
+) -> Result<impl Future<Item = Host, Error = Error>, Error> {
+    let host_result_mutex: &'static mut Mutex<Result<Host, ServiceError>> =
+        Box::leak(Box::new(Mutex::new(Ok(Host {
+            name: String::new(),
+            port: 0,
+        }))));
+    let sd_ref = dns_service_resolve(service, host_result_mutex)?;
+    let raw_fd = dns_service_ref_socket(&sd_ref)?;
+    Ok(wait_for_socket(raw_fd).then(move |result| match result {
+        Ok(()) => {
+            dns_service_process_result(&sd_ref);
+            (*host_result_mutex)
+                .lock()
+                .unwrap()
+                .clone()
+                .map_err(|e| Error::from(e))
+        }
+        Err(e) => Err(e),
     }))
 }
 

@@ -23,9 +23,8 @@ impl State {
 
 fn register_service() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
     let f = dnssd::register_service()?
-        .map_err(|err: dnssd::Error| {
+        .map_err(|err| {
             println!("Oh no, an error! {:?}", err);
-            ()
         })
         .then(|registration| {
             let dur = Duration::from_secs(5);
@@ -39,30 +38,37 @@ fn register_service() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error
     Ok(f)
 }
 
-fn track_peers(
-    state: Arc<Mutex<State>>,
-) -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
-    Ok(dnssd::browse_services()?
-        .for_each(move |browse_event| {
-            let mut guard = state.lock().unwrap();
+fn track_peers() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
+    let future = dnssd::browse_services()?
+        .map(|browse_event| {
             match browse_event {
-                dnssd::BrowseEvent::Joined(service) => {
-                    (*guard).peers.insert(service);
+                dnssd::BrowseEvent::Joined(ref service) => {
+                    println!("Service joined: {:?}", service);
                 }
-                dnssd::BrowseEvent::Dropped(service) => {
-                    (*guard).peers.remove(&service);
+                dnssd::BrowseEvent::Dropped(ref service) => {
+                    println!("Service dropped: {:?}", service);
                 }
-            };
-            println!("Peers: {:?}", (*guard).peers);
-            Ok(())
+            }
+            browse_event
+        })
+        .filter_map(|browse_event| match browse_event {
+            dnssd::BrowseEvent::Joined(service) => Some(service),
+            dnssd::BrowseEvent::Dropped(service) => None,
+        })
+        .for_each(|service| {
+            dnssd::resolve_service(&service).unwrap().map(|host| -> () {
+                println!("Resolved host: {:?}", host);
+            })
         })
         .map_err(|e| {
             println!("Uh oh! {:?}", e);
             ()
-        }))
+        });
+
+    Ok(future)
 }
 
 fn main() {
     let state = Arc::new(Mutex::new(State::new()));
-    tokio::run(track_peers(state).unwrap());
+    tokio::run(track_peers().unwrap());
 }
