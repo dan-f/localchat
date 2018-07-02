@@ -33,39 +33,6 @@ pub type dnssd_sock_t = c_int;
 
 pub type DNSServiceErrorType = int32_t;
 
-pub const DNSSERVICEERR_NOERROR: DNSServiceErrorType = 0;
-pub const DNSSERVICEERR_UNKNOWN: DNSServiceErrorType = -65537; /* 0xFFFE FFFF */
-pub const DNSSERVICEERR_NOSUCHNAME: DNSServiceErrorType = -65538;
-pub const DNSSERVICEERR_NOMEMORY: DNSServiceErrorType = -65539;
-pub const DNSSERVICEERR_BADPARAM: DNSServiceErrorType = -65540;
-pub const DNSSERVICEERR_BADREFERENCE: DNSServiceErrorType = -65541;
-pub const DNSSERVICEERR_BADSTATE: DNSServiceErrorType = -65542;
-pub const DNSSERVICEERR_BADFLAGS: DNSServiceErrorType = -65543;
-pub const DNSSERVICEERR_UNSUPPORTED: DNSServiceErrorType = -65544;
-pub const DNSSERVICEERR_NOTINITIALIZED: DNSServiceErrorType = -65545;
-pub const DNSSERVICEERR_ALREADYREGISTERED: DNSServiceErrorType = -65547;
-pub const DNSSERVICEERR_NAMECONFLICT: DNSServiceErrorType = -65548;
-pub const DNSSERVICEERR_INVALID: DNSServiceErrorType = -65549;
-pub const DNSSERVICEERR_FIREWALL: DNSServiceErrorType = -65550;
-pub const DNSSERVICEERR_INCOMPATIBLE: DNSServiceErrorType = -65551; /* client library incompatible with daemon */
-pub const DNSSERVICEERR_BADINTERFACEINDEX: DNSServiceErrorType = -65552;
-pub const DNSSERVICEERR_REFUSED: DNSServiceErrorType = -65553;
-pub const DNSSERVICEERR_NOSUCHRECORD: DNSServiceErrorType = -65554;
-pub const DNSSERVICEERR_NOAUTH: DNSServiceErrorType = -65555;
-pub const DNSSERVICEERR_NOSUCHKEY: DNSServiceErrorType = -65556;
-pub const DNSSERVICEERR_NATTRAVERSAL: DNSServiceErrorType = -65557;
-pub const DNSSERVICEERR_DOUBLENAT: DNSServiceErrorType = -65558;
-pub const DNSSERVICEERR_BADTIME: DNSServiceErrorType = -65559; /* Codes up to here existed in Tiger */
-pub const DNSSERVICEERR_BADSIG: DNSServiceErrorType = -65560;
-pub const DNSSERVICEERR_BADKEY: DNSServiceErrorType = -65561;
-pub const DNSSERVICEERR_TRANSIENT: DNSServiceErrorType = -65562;
-pub const DNSSERVICEERR_SERVICENOTRUNNING: DNSServiceErrorType = -65563; /* Background daemon not running */
-pub const DNSSERVICEERR_NATPORTMAPPINGUNSUPPORTED: DNSServiceErrorType = -65564; /* NAT doesn't support PCP, NAT-PMP or UPnP */
-pub const DNSSERVICEERR_NATPORTMAPPINGDISABLED: DNSServiceErrorType = -65565; /* NAT supports PCP, NAT-PMP or UPnP, but it's disabled by the administrator */
-pub const DNSSERVICEERR_NOROUTER: DNSServiceErrorType = -65566; /* No router currently configured (probably no network connectivity) */
-pub const DNSSERVICEERR_POLLINGMODE: DNSServiceErrorType = -65567;
-pub const DNSSERVICEERR_TIMEOUT: DNSServiceErrorType = -65568;
-
 type DNSServiceRegisterReply = extern "C" fn(
     sd_ref: DNSServiceRef,
     flags: DNSServiceFlags,
