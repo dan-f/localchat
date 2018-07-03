@@ -33,6 +33,8 @@ pub type dnssd_sock_t = c_int;
 
 pub type DNSServiceErrorType = int32_t;
 
+type DNSServiceProtocol = uint32_t;
+
 type DNSServiceRegisterReply = extern "C" fn(
     sd_ref: DNSServiceRef,
     flags: DNSServiceFlags,
@@ -64,6 +66,17 @@ type DNSServiceResolveReply = extern "C" fn(
     port: uint16_t,
     txt_len: uint16_t,
     txt_record: *const c_uchar,
+    context: *mut c_void,
+);
+
+type DNSServiceGetAddrInfoReply = extern "C" fn(
+    sd_ref: DNSServiceRef,
+    flags: DNSServiceFlags,
+    interface_index: uint32_t,
+    error_code: DNSServiceErrorType,
+    hostname: *const c_char,
+    address: *const c_char,
+    ttl: uint32_t,
     context: *mut c_void,
 );
 
@@ -291,6 +304,16 @@ extern "C" {
         regtype: *const c_char,
         domain: *const c_char,
         callback: DNSServiceResolveReply,
+        context: *mut c_void,
+    ) -> DNSServiceErrorType;
+
+    fn DNSServiceGetAddrInfo(
+        sd_ref: *mut DNSServiceRef,
+        flags: DNSServiceFlags,
+        interface_index: uint32_t,
+        protocol: DNSServiceProtocol,
+        hostname: *const c_char,
+        callback: DNSServiceGetAddrInfoReply,
         context: *mut c_void,
     ) -> DNSServiceErrorType;
 
