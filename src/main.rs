@@ -53,12 +53,20 @@ fn track_peers() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
         })
         .filter_map(|browse_event| match browse_event {
             dnssd::BrowseEvent::Joined(service) => Some(service),
-            dnssd::BrowseEvent::Dropped(service) => None,
+            dnssd::BrowseEvent::Dropped(_) => None,
         })
         .for_each(|service| {
-            dnssd::resolve_service(&service).unwrap().map(|host| -> () {
-                println!("Resolved host: {:?}", host);
-            })
+            dnssd::resolve_service(&service)
+                .unwrap()
+                .map(|host| {
+                    println!("Resolved host: {:?}", host);
+                    host
+                })
+                .and_then(|host| {
+                    dnssd::get_address(&host)
+                        .unwrap()
+                        .map(|addr| println!("Address is: {:?}", addr))
+                })
         })
         .map_err(|e| {
             println!("Uh oh! {:?}", e);

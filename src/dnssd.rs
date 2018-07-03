@@ -1,9 +1,13 @@
-use libc::{c_char, c_int, c_uchar, c_void, int32_t, uint16_t, uint32_t};
+use libc::{
+    c_char, c_int, c_uchar, c_void, int32_t, sa_family_t, sockaddr, sockaddr_in, sockaddr_in6,
+    uint16_t, uint32_t, AF_INET,
+};
 use mio;
 use mio::unix::EventedFd;
 use std::convert::From;
 use std::ffi::{CStr, CString};
 use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ptr;
 use std::sync::Mutex;
 use tokio::prelude::*;
@@ -34,6 +38,8 @@ pub type dnssd_sock_t = c_int;
 pub type DNSServiceErrorType = int32_t;
 
 type DNSServiceProtocol = uint32_t;
+
+pub const DNS_SERVICE_PROTOCOL_IPV4: DNSServiceProtocol = 0x01;
 
 type DNSServiceRegisterReply = extern "C" fn(
     sd_ref: DNSServiceRef,
@@ -75,7 +81,7 @@ type DNSServiceGetAddrInfoReply = extern "C" fn(
     interface_index: uint32_t,
     error_code: DNSServiceErrorType,
     hostname: *const c_char,
-    address: *const c_char,
+    address: *const sockaddr,
     ttl: uint32_t,
     context: *mut c_void,
 );
@@ -253,6 +259,85 @@ pub fn dns_service_resolve(
     }
 }
 
+extern "C" fn dns_service_get_addr_info_reply(
+    _sd_ref: DNSServiceRef,
+    _flags: DNSServiceFlags,
+    _interface_index: uint32_t,
+    error_code: DNSServiceErrorType,
+    _hostname: *const c_char,
+    address: *const sockaddr,
+    _ttl: uint32_t,
+    context: *mut c_void,
+) {
+    let err = ServiceError::from(error_code);
+    let result = if let ServiceError::NoError = err {
+        let addr = unsafe {
+            if (*address).sa_family == AF_INET as sa_family_t {
+                // IPv4
+                let s_addr = *(address as *const sockaddr_in);
+                let addr = u32::from_be(s_addr.sin_addr.s_addr);
+                IpAddr::V4(Ipv4Addr::new(
+                    ((addr >> 24) & 0xff) as u8,
+                    ((addr >> 16) & 0xff) as u8,
+                    ((addr >> 8) & 0xff) as u8,
+                    (addr & 0xff) as u8,
+                ))
+            } else {
+                // IPv6
+                let s_addr: sockaddr_in6 = *(address as *const sockaddr_in6);
+                let s6_addr = s_addr.sin6_addr.s6_addr;
+                let mut chunks = s6_addr
+                    .chunks(2)
+                    .map(|tuple| ((tuple[0] as u16) << 8) | (tuple[1] as u16));
+                let a = chunks.next().unwrap();
+                let b = chunks.next().unwrap();
+                let c = chunks.next().unwrap();
+                let d = chunks.next().unwrap();
+                let e = chunks.next().unwrap();
+                let f = chunks.next().unwrap();
+                let g = chunks.next().unwrap();
+                let h = chunks.next().unwrap();
+                IpAddr::V6(Ipv6Addr::new(a, b, c, d, e, f, g, h))
+            }
+        };
+        Ok(addr)
+    } else {
+        Err(err)
+    };
+    let ipaddr_mutex: &mut Mutex<Result<IpAddr, ServiceError>> =
+        unsafe { &mut *(context as *mut Mutex<Result<IpAddr, ServiceError>>) };
+    let mut guard = ipaddr_mutex.lock().unwrap();
+    *guard = result;
+}
+
+pub fn dns_service_get_addr_info(
+    host: &Host,
+    ipaddr_mutex: &mut Mutex<Result<IpAddr, ServiceError>>,
+) -> Result<BoxedDNSServiceRef, ServiceError> {
+    let mut sd_ref: DNSServiceRef = ptr::null_mut();
+    let sd_ref_ptr = &mut sd_ref as *mut DNSServiceRef;
+    let hostname = CString::new(host.name.as_bytes()).unwrap().into_raw();
+    let context = ipaddr_mutex as *mut _ as *mut c_void;
+    let err = unsafe {
+        DNSServiceGetAddrInfo(
+            sd_ref_ptr,
+            0,
+            0,
+            // could change to "not care" about v4 or v6
+            DNS_SERVICE_PROTOCOL_IPV4,
+            hostname,
+            dns_service_get_addr_info_reply,
+            context,
+        )
+    };
+    let err = ServiceError::from(err);
+    if let ServiceError::NoError = err {
+        Ok(BoxedDNSServiceRef(sd_ref))
+    } else {
+        Err(err)
+    }
+}
+
 pub fn dns_service_ref_socket(sd_ref: &BoxedDNSServiceRef) -> Result<dnssd_sock_t, ServiceError> {
     let sock_fd = unsafe { DNSServiceRefSockFD(sd_ref.0) };
     if sock_fd == -1 {
@@ -262,8 +347,13 @@ pub fn dns_service_ref_socket(sd_ref: &BoxedDNSServiceRef) -> Result<dnssd_sock_
     }
 }
 
-pub fn dns_service_process_result(sd_ref: &BoxedDNSServiceRef) -> ServiceError {
-    unsafe { ServiceError::from(DNSServiceProcessResult(sd_ref.0)) }
+pub fn dns_service_process_result(sd_ref: &BoxedDNSServiceRef) -> Result<(), ServiceError> {
+    let err = unsafe { ServiceError::from(DNSServiceProcessResult(sd_ref.0)) };
+    if let ServiceError::NoError = err {
+        Ok(())
+    } else {
+        Err(err)
+    }
 }
 
 pub fn dns_service_ref_deallocate(sd_ref: DNSServiceRef) {
@@ -496,9 +586,10 @@ pub fn register_service() -> Result<impl Future<Item = Registration, Error = Err
     let raw_fd = dns_service_ref_socket(&sd_ref)?;
     Ok(wait_for_socket(raw_fd).then(move |result| {
         result?;
-        // Will synchronously trigger our "callback"
-        dns_service_process_result(&sd_ref);
-        (*service_result_mutex.lock().unwrap())
+        dns_service_process_result(&sd_ref)?;
+        service_result_mutex
+            .lock()
+            .unwrap()
             .clone()
             .map(|service| Registration { sd_ref, service })
             .map_err(|e| Error::from(e))
@@ -513,7 +604,7 @@ pub fn browse_services() -> Result<impl Stream<Item = BrowseEvent, Error = Error
     let raw_fd = dns_service_ref_socket(&sd_ref)?;
     Ok(socket_ready_stream(raw_fd).then(move |result| {
         result?;
-        dns_service_process_result(&sd_ref);
+        dns_service_process_result(&sd_ref)?;
         browse_event
             .lock()
             .unwrap()
@@ -532,16 +623,31 @@ pub fn resolve_service(
         }))));
     let sd_ref = dns_service_resolve(service, host_result_mutex)?;
     let raw_fd = dns_service_ref_socket(&sd_ref)?;
-    Ok(wait_for_socket(raw_fd).then(move |result| match result {
-        Ok(()) => {
-            dns_service_process_result(&sd_ref);
-            (*host_result_mutex)
-                .lock()
-                .unwrap()
-                .clone()
-                .map_err(|e| Error::from(e))
-        }
-        Err(e) => Err(e),
+    Ok(wait_for_socket(raw_fd).then(move |result| {
+        result?;
+        dns_service_process_result(&sd_ref)?;
+        host_result_mutex
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(|e| Error::from(e))
+    }))
+}
+
+pub fn get_address(host: &Host) -> Result<impl Future<Item = IpAddr, Error = Error>, Error> {
+    let ipaddr_mutex: &'static mut Mutex<Result<IpAddr, ServiceError>> = Box::leak(Box::new(
+        Mutex::new(Ok(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))),
+    ));
+    let sd_ref = dns_service_get_addr_info(host, ipaddr_mutex)?;
+    let raw_fd = dns_service_ref_socket(&sd_ref)?;
+    Ok(wait_for_socket(raw_fd).then(move |result| {
+        result?;
+        dns_service_process_result(&sd_ref)?;
+        ipaddr_mutex
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(|e| Error::from(e))
     }))
 }
 
