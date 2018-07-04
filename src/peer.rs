@@ -6,12 +6,12 @@ use super::NetworkEvent;
 use dnssd;
 
 #[derive(Debug)]
-pub struct PeerWithEvent {
-    peer: Peer,
-    event: NetworkEvent,
+pub struct PeerEvent {
+    pub peer: Peer,
+    pub event: NetworkEvent,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Hash)]
 pub struct Peer {
     pub servicename: String,
     pub hostname: String,
@@ -30,11 +30,10 @@ fn find_peer(service: &dnssd::Service) -> impl Future<Item = Peer, Error = dnssd
     })
 }
 
-pub fn track_peers() -> Result<impl Stream<Item = PeerWithEvent, Error = dnssd::Error>, dnssd::Error>
-{
+pub fn track_peers() -> Result<impl Stream<Item = PeerEvent, Error = dnssd::Error>, dnssd::Error> {
     Ok(
-        dnssd::browse_services()?.and_then(|dnssd::BrowseEvent { service, event }| {
-            find_peer(&service).map(|peer| PeerWithEvent { peer, event })
+        dnssd::browse_services()?.and_then(|dnssd::ServiceEvent { service, event }| {
+            find_peer(&service).map(|peer| PeerEvent { peer, event })
         }),
     )
 }

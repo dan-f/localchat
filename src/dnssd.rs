@@ -155,8 +155,8 @@ extern "C" fn dns_service_browse_cb(
     domain: *const c_char,
     context: *mut c_void,
 ) {
-    let browse_event_mutex: &mut Mutex<Result<BrowseEvent, ServiceError>> =
-        unsafe { &mut *(context as *mut Mutex<Result<BrowseEvent, ServiceError>>) };
+    let browse_event_mutex: &mut Mutex<Result<ServiceEvent, ServiceError>> =
+        unsafe { &mut *(context as *mut Mutex<Result<ServiceEvent, ServiceError>>) };
     let mut browse_guard = browse_event_mutex.lock().unwrap();
     let err = ServiceError::from(error_code);
     *browse_guard = if let ServiceError::NoError = err {
@@ -172,14 +172,14 @@ extern "C" fn dns_service_browse_cb(
         } else {
             NetworkEvent::Dropped
         };
-        Ok(BrowseEvent { service, event })
+        Ok(ServiceEvent { service, event })
     } else {
         Err(err)
     };
 }
 
 pub fn dns_service_browse(
-    browse_event_result: &mut Mutex<Result<BrowseEvent, ServiceError>>,
+    browse_event_result: &mut Mutex<Result<ServiceEvent, ServiceError>>,
 ) -> Result<BoxedDNSServiceRef, ServiceError> {
     let context = browse_event_result as *mut _ as *mut c_void;
     unsafe {
@@ -515,7 +515,7 @@ impl From<io::Error> for Error {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Service {
     pub name: String,
     pub regtype: String,
@@ -529,7 +529,7 @@ pub struct Host {
 }
 
 #[derive(Clone, Debug)]
-pub struct BrowseEvent {
+pub struct ServiceEvent {
     pub service: Service,
     pub event: NetworkEvent,
 }
@@ -598,9 +598,9 @@ pub fn register_service() -> Result<impl Future<Item = Registration, Error = Err
     }))
 }
 
-pub fn browse_services() -> Result<impl Stream<Item = BrowseEvent, Error = Error>, Error> {
-    let browse_event: &'static mut Mutex<Result<BrowseEvent, ServiceError>> =
-        Box::leak(Box::new(Mutex::new(Ok(BrowseEvent {
+pub fn browse_services() -> Result<impl Stream<Item = ServiceEvent, Error = Error>, Error> {
+    let browse_event: &'static mut Mutex<Result<ServiceEvent, ServiceError>> =
+        Box::leak(Box::new(Mutex::new(Ok(ServiceEvent {
             service: Service::default(),
             event: NetworkEvent::Joined,
         }))));

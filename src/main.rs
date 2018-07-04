@@ -2,16 +2,18 @@ extern crate localchat;
 extern crate tokio;
 
 use localchat::dnssd;
-use localchat::peer::track_peers;
+use localchat::peer::{track_peers, Peer, PeerEvent};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::prelude::*;
 use tokio::timer::Delay;
 
+use localchat::NetworkEvent;
+
 #[derive(Debug)]
 struct State {
-    peers: HashSet<dnssd::Service>,
+    peers: HashSet<Peer>,
 }
 
 impl State {
@@ -19,6 +21,14 @@ impl State {
         State {
             peers: HashSet::new(),
         }
+    }
+
+    fn add_peer(&mut self, peer: Peer) -> bool {
+        self.peers.insert(peer)
+    }
+
+    fn drop_peer(&mut self, peer: &Peer) -> bool {
+        self.peers.remove(&peer)
     }
 }
 
@@ -39,10 +49,23 @@ fn register_service() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error
     Ok(f)
 }
 
-fn track_peers_task() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
+fn track_peers_task(
+    state: Arc<Mutex<State>>,
+) -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
     let task = track_peers()?
-        .for_each(|peer_event| {
-            println!("{:?}", peer_event);
+        .for_each(move |peer_event| {
+            let PeerEvent { peer, event } = peer_event;
+            match event {
+                NetworkEvent::Joined => {
+                    let mut guard = state.lock().unwrap();
+                    (*guard).add_peer(peer);
+                }
+                NetworkEvent::Dropped => {
+                    let mut guard = state.lock().unwrap();
+                    (*guard).drop_peer(&peer);
+                }
+            }
+            println!("State: {:?}", state);
             Ok(())
         })
         .map_err(|err| {
@@ -54,5 +77,5 @@ fn track_peers_task() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error
 
 fn main() {
     let state = Arc::new(Mutex::new(State::new()));
-    tokio::run(track_peers_task().unwrap());
+    tokio::run(track_peers_task(Arc::clone(&state)).unwrap());
 }
