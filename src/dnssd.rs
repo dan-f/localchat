@@ -515,15 +515,15 @@ impl From<io::Error> for Error {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Service {
-    name: String,
-    regtype: String,
-    domain: String,
+    pub name: String,
+    pub regtype: String,
+    pub domain: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct Host {
-    name: String,
-    port: u16,
+    pub name: String,
+    pub port: u16,
 }
 
 #[derive(Clone, Debug)]
