@@ -13,6 +13,8 @@ use std::sync::Mutex;
 use tokio::prelude::*;
 use tokio::reactor::PollEvented2;
 
+use super::NetworkEvent;
+
 pub enum DNSService {}
 
 pub type DNSServiceRef = *mut DNSService;
@@ -165,12 +167,12 @@ extern "C" fn dns_service_browse_cb(
                 domain: CStr::from_ptr(domain).to_string_lossy().into_owned(),
             }
         };
-        let browse_event = if flags & 0x2 > 0 {
-            BrowseEvent::Joined(service)
+        let event = if flags & 0x2 > 0 {
+            NetworkEvent::Joined
         } else {
-            BrowseEvent::Dropped(service)
+            NetworkEvent::Dropped
         };
-        Ok(browse_event)
+        Ok(BrowseEvent { service, event })
     } else {
         Err(err)
     };
@@ -527,9 +529,9 @@ pub struct Host {
 }
 
 #[derive(Clone, Debug)]
-pub enum BrowseEvent {
-    Joined(Service),
-    Dropped(Service),
+pub struct BrowseEvent {
+    pub service: Service,
+    pub event: NetworkEvent,
 }
 
 #[derive(Debug)]
@@ -597,9 +599,11 @@ pub fn register_service() -> Result<impl Future<Item = Registration, Error = Err
 }
 
 pub fn browse_services() -> Result<impl Stream<Item = BrowseEvent, Error = Error>, Error> {
-    let browse_event: &'static mut Mutex<Result<BrowseEvent, ServiceError>> = Box::leak(Box::new(
-        Mutex::new(Ok(BrowseEvent::Joined(Service::default()))),
-    ));
+    let browse_event: &'static mut Mutex<Result<BrowseEvent, ServiceError>> =
+        Box::leak(Box::new(Mutex::new(Ok(BrowseEvent {
+            service: Service::default(),
+            event: NetworkEvent::Joined,
+        }))));
     let sd_ref = dns_service_browse(browse_event)?;
     let raw_fd = dns_service_ref_socket(&sd_ref)?;
     Ok(socket_ready_stream(raw_fd).then(move |result| {

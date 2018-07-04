@@ -39,7 +39,20 @@ fn register_service() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error
     Ok(f)
 }
 
+fn track_peers_task() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
+    let task = track_peers()?
+        .for_each(|peer_event| {
+            println!("{:?}", peer_event);
+            Ok(())
+        })
+        .map_err(|err| {
+            println!("Error occurred tracking peers: {:?}", err);
+            ()
+        });
+    Ok(task)
+}
+
 fn main() {
     let state = Arc::new(Mutex::new(State::new()));
-    tokio::run(track_peers().unwrap());
+    tokio::run(track_peers_task().unwrap());
 }

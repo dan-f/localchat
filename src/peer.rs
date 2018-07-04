@@ -1,7 +1,15 @@
 use std::net::SocketAddr;
 use tokio::prelude::*;
 
+use super::NetworkEvent;
+
 use dnssd;
+
+#[derive(Debug)]
+pub struct PeerWithEvent {
+    peer: Peer,
+    event: NetworkEvent,
+}
 
 #[derive(Debug)]
 pub struct Peer {
@@ -12,6 +20,7 @@ pub struct Peer {
 
 fn find_peer(service: &dnssd::Service) -> impl Future<Item = Peer, Error = dnssd::Error> {
     let servicename = service.name.clone();
+    // TODO: remove these unwraps
     dnssd::resolve_service(&service).unwrap().and_then(|host| {
         dnssd::get_address(&host).unwrap().map(|addr| Peer {
             servicename: servicename,
@@ -21,24 +30,11 @@ fn find_peer(service: &dnssd::Service) -> impl Future<Item = Peer, Error = dnssd
     })
 }
 
-pub fn track_peers() -> Result<impl Future<Item = (), Error = ()>, dnssd::Error> {
-    let future = dnssd::browse_services()?
-        .for_each(|event| {
-            let print_peer = |service| find_peer(&service).map(|peer| println!("{:?}", peer));
-            match event {
-                dnssd::BrowseEvent::Joined(service) => {
-                    print!("Peer joined: ");
-                    print_peer(service)
-                }
-                dnssd::BrowseEvent::Dropped(service) => {
-                    print!("Peer dropped: ");
-                    print_peer(service)
-                }
-            }
-        })
-        .map_err(|e| {
-            println!("Uh oh! {:?}", e);
-            ()
-        });
-    Ok(future)
+pub fn track_peers() -> Result<impl Stream<Item = PeerWithEvent, Error = dnssd::Error>, dnssd::Error>
+{
+    Ok(
+        dnssd::browse_services()?.and_then(|dnssd::BrowseEvent { service, event }| {
+            find_peer(&service).map(|peer| PeerWithEvent { peer, event })
+        }),
+    )
 }
