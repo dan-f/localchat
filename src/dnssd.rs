@@ -216,7 +216,6 @@ extern "C" fn dns_service_resolve_reply(
     _txt_record: *const c_uchar,
     context: *mut c_void,
 ) {
-    let port = u16::from_be(port); // Note that `port` is in network byte order (big-endian)
     let name = unsafe { CStr::from_ptr(hosttarget).to_string_lossy().into_owned() };
     let host = Host { name, port };
     let err = ServiceError::from(error_code);

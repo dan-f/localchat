@@ -4,6 +4,7 @@ extern crate libc;
 extern crate mio;
 extern crate tokio;
 
+pub mod chat;
 pub mod dnssd;
 pub mod peer;
 
