@@ -1,7 +1,9 @@
+extern crate bytes;
 extern crate futures;
 extern crate localchat;
 extern crate tokio;
 
+use bytes::Bytes;
 use futures::future::lazy;
 use futures::sync::mpsc;
 use localchat::dnssd;
@@ -85,11 +87,11 @@ fn track_peers_task(
 fn main() {
     let state = Arc::new(Mutex::new(State::new()));
     let (tx, rx): (
-        mpsc::UnboundedSender<(SocketAddr, String)>,
-        mpsc::UnboundedReceiver<(SocketAddr, String)>,
+        mpsc::UnboundedSender<(SocketAddr, Bytes)>,
+        mpsc::UnboundedReceiver<(SocketAddr, Bytes)>,
     ) = mpsc::unbounded();
-    let log_connections_task = rx.for_each(|(addr, _)| {
-        println!("Incoming TCP connection from peer: {:?}", addr);
+    let log_connections_task = rx.for_each(|(addr, msg)| {
+        println!("Peer {:?} says: {:?}", addr, msg);
         Ok(())
     });
     let registrations_task = register_service_task(Arc::clone(&state))
